@@ -1,102 +1,124 @@
+`timescale 1ns/1ps
+
+// ==========================================================================
+// MODULE 1: DATA PROCESSOR
+// ==========================================================================
 module data_proc (
-
-    input clk,
-    input rstn,
-
-    input [7:0]      pixel_in,   
-    input            valid_in,   
-    input            ready_in,
-    input [1:0]      mode,       
-    input [71:0]     kernel,     
-
-    output reg [7:0] pixel_out,  
-    output reg       ready_out, 
-    output reg       valid_out
+    input clk, rstn,
+    input [7:0] pixel_in,
+    input valid_in,
+    input ready_in,
+    input [1:0] mode,
+    input [71:0] kernel,
+    output reg [7:0] pixel_out,
+    output reg ready_out,
+    output reg valid_out,
+    output status 
 );
+    reg [20:0] pixel_count;
+    reg [7:0] lb1 [0:1023], lb2 [0:1023];
+    reg [9:0] ptr;
+    reg [7:0] p11,p12,p13,p21,p22,p23,p31,p32,p33;
 
-reg [1:0] mode_reg;
-reg [71:0] kernel_reg;
-reg [7:0] pixel_reg;
-reg [20:0] pixel_count;
+    // Status logic
+    assign status = (mode == 2'b10 && pixel_count < 2051) || !ready_in;
 
-reg [7:0] line_buf_1 [0:1023];
-reg [7:0] line_buf_2 [0:1023];
-reg [9:0] ptr; 
+    wire [19:0] conv_sum = (p11*kernel[7:0]   + p12*kernel[15:8]  + p13*kernel[23:16] +
+                            p21*kernel[31:24] + p22*kernel[39:32] + p23*kernel[47:40] +
+                            p31*kernel[55:48] + p32*kernel[63:56] + p33*kernel[71:64]);
 
-reg [7:0] p11, p12, p13, p21, p22, p23, p31, p32, p33;
-
-wire [7:0] k11 = kernel[7:0];   wire [7:0] k12 = kernel[15:8];  wire [7:0] k13 = kernel[23:16];
-wire [7:0] k21 = kernel[31:24];   wire [7:0] k22 = kernel[39:32];  wire [7:0] k23 = kernel[47:40];
-wire [7:0] k31 = kernel[55:48];   wire [7:0] k32 = kernel[63:56];  wire [7:0] k33 = kernel[71:64];
-
-wire [7:0] lb1_out = line_buf_1[ptr];
-wire [7:0] lb2_out = line_buf_2[ptr];
-
-wire [19:0] conv_sum = (p11*k11 + p12*k12 + p13*k13 +p21*k21 + p22*k22 + p23*k23 +p31*k31 + p32*k32 + p33*k33);
-wire [7:0] conv_result = (conv_sum / 9); //normalization step
-
-always@(*)begin
-    case(mode_reg)
-        2'b00:   pixel_reg = pixel_in;           
-        2'b01:   pixel_reg = ~pixel_in;          
-        2'b10:   pixel_reg = conv_result;        
-        default: pixel_reg = pixel_in;
-    endcase
-end
-
-always@(posedge clk or negedge rstn) begin
-    if (!rstn) begin
-        mode_reg <= 2'b00;
-        ready_out <= 1'b1;
-        kernel_reg <= 72'h0;
-        pixel_out <= 8'h0;
-        valid_out <= 1'b0;
-    end else begin
-        mode_reg <= mode;
-        kernel_reg <= kernel;
-
-            if (valid_in && ready_out) begin
+    always @(posedge clk or negedge rstn) begin
+        if (!rstn) begin
+            {valid_out, pixel_out, ptr, pixel_count} <= 0;
+            ready_out <= 1'b1;
+            {p11,p12,p13,p21,p22,p23,p31,p32,p33} <= 0;
+        end else if (valid_in && ready_out) begin
+            p11<=p12; p12<=p13; p13<=lb2[ptr];
+            p21<=p22; p22<=p23; p23<=lb1[ptr];
+            p31<=p32; p32<=p33; p33<=pixel_in;
             
-                p11 <= p12; p12 <= p13; p13 <= lb2_out;
-                p21 <= p22; p22 <= p23; p23 <= lb1_out;
-                p31 <= p32; p32 <= p33; p33 <= pixel_in;
+            lb1[ptr] <= pixel_in; lb2[ptr] <= lb1[ptr];
+            ptr <= (ptr == 1023) ? 0 : ptr + 1;
+            pixel_count <= pixel_count + 1;
 
-                line_buf_1[ptr] <= pixel_in;
-                line_buf_2[ptr] <= lb1_out;
+            case(mode)
+                2'b00: pixel_out <= pixel_in;
+                2'b01: pixel_out <= ~pixel_in;
+                2'b10: pixel_out <= conv_sum / 9;
+                default: pixel_out <= pixel_in;
+            endcase
+            valid_out <= (mode == 2'b10) ? (pixel_count >= 2051) : 1'b1;
+        end else if (ready_in) begin
+            valid_out <= 1'b0;
+        end
+    end
+endmodule
 
-                ptr <= (ptr == 1023) ? 10'd0 : ptr + 10'd1;
-                if (pixel_count < 21'h1FFFFF) pixel_count <= pixel_count + 1;
+// ==========================================================================
+// MODULE 2: ASYNC FIFO
+// ==========================================================================
+module async_fifo #(parameter WIDTH = 8, DEPTH = 16) (
+    input wclk, wrst_n, wr_en,
+    input [WIDTH-1:0] wdata,
+    input rclk, rrst_n, rd_en,
+    output [WIDTH-1:0] rdata,
+    output reg full, empty
+);
+    reg [WIDTH-1:0] mem [0:DEPTH-1];
+    reg [3:0] wptr, rptr;
+    reg [3:0] wptr_gray, rptr_gray;
+    reg [3:0] wq2_rptr, rq2_wptr; 
+    reg [3:0] wq1_rptr, rq1_wptr;
 
-                pixel_out <= pixel_reg;
-                
-                if (mode_reg == 2'b10)
-                    valid_out <= (pixel_count >= 2051);
-                else
-                    valid_out <= 1'b1;
-
-            end else if (ready_in) begin
-                valid_out <= 1'b0;
-            end
+    always @(posedge wclk or negedge wrst_n) begin
+        if (!wrst_n) begin wptr <= 0; wptr_gray <= 0; end
+        else if (wr_en && !full) begin
+            mem[wptr[3:0]] <= wdata;
+            wptr <= wptr + 1;
+            wptr_gray <= (wptr + 1) ^ ((wptr + 1) >> 1);
         end
     end
 
+    always @(posedge rclk or negedge rrst_n) begin
+        if (!rrst_n) begin rptr <= 0; rptr_gray <= 0; end
+        else if (rd_en && !empty) begin
+            rptr <= rptr + 1;
+            rptr_gray <= (rptr + 1) ^ ((rptr + 1) >> 1);
+        end
+    end
+    assign rdata = mem[rptr[3:0]];
+
+    always @(posedge wclk) {wq2_rptr, wq1_rptr} <= {wq1_rptr, rptr_gray};
+    always @(posedge rclk) {rq2_wptr, rq1_wptr} <= {rq1_wptr, wptr_gray};
+
+    always @(*) full = (wptr_gray == {~wq2_rptr[3:2], wq2_rptr[1:0]});
+    always @(*) empty = (rptr_gray == rq2_wptr);
 endmodule
 
+// ==========================================================================
+// MODULE 3: DATA PRODUCER
+// ==========================================================================
+module data_producer #(parameter IMAGE_SIZE = 1024) (
+    input sensor_clk, rst_n, ready,
+    output reg [7:0] pixel,
+    output reg valid
+);
+    reg [7:0] image_mem [0:IMAGE_SIZE-1];
+    reg [$clog2(IMAGE_SIZE):0] pixel_index;
 
+    initial begin $readmemh("image.hex", image_mem); end
 
-/* --------------------------------------------------------------------------
-Purpose of this module : This module should perform certain operations
-based on the mode register and pixel values streamed out by data_prod module.
-
-mode[1:0]:
-00 - Bypass
-01 - Invert the pixel
-10 - Convolution with a kernel of your choice (kernel is 3x3 2d array)
-11 - Not implemented
-
-Memory map of registers:
-
-0x00 - Mode (2 bits)    [R/W]
-0x04 - Kernel (9 * 8 = 72 bits)     [R/W]
-0x10 - Status reg   [R]
-----------------------------------------------------------------------------*/
+    always @(posedge sensor_clk or negedge rst_n) begin
+        if (!rst_n) begin
+            pixel_index <= 0;
+            valid <= 0;
+            pixel <= 8'h00;
+        end else if (ready) begin
+            pixel <= image_mem[pixel_index];
+            valid <= 1'b1;
+            pixel_index <= (pixel_index < IMAGE_SIZE-1) ? pixel_index + 1 : 0;
+        end else begin
+            valid <= (pixel_index == 0) ? 1'b0 : 1'b1;
+        end
+    end
+endmodule

@@ -1,94 +1,102 @@
 `timescale 1ns/1ps
 
 module tb_data_prod_proc;
-
+    
     reg clk = 0;
     reg sensor_clk = 0;
-
-    // 100MHz
-    always #5 clk = ~clk;
-
-    // 200MHz
-    always #2.5 sensor_clk = ~sensor_clk;
-
-    reg [5:0] reset_cnt = 0;
-    wire resetn = &reset_cnt;
-
-    always @(posedge clk) begin
-        if (!resetn)
-            reset_cnt <= reset_cnt + 1'b1;
-    end
-
-    reg [5:0] sensor_reset_cnt = 0;
-    wire sensor_resetn = &sensor_reset_cnt;
-
-    always @(posedge sensor_clk) begin
-        if (!sensor_resetn)
-            sensor_reset_cnt <= sensor_reset_cnt + 1'b1;
-    end
-
-    // Connection Wires
-    wire [7:0] pixel_bus;
-    wire       valid_bus;
-    wire       ready_bus;
     
-    reg [1:0]  tb_mode;
-    reg [71:0] tb_kernel;
+    always #5 clk = ~clk;            
+    always #2.5 sensor_clk = ~sensor_clk; 
+
+    reg [5:0] r_cnt = 0;
+    reg [5:0] s_cnt = 0;
+    wire rstn = &r_cnt;       // Processing domain reset
+    wire srstn = &s_cnt;      // Sensor domain reset
+
+    always @(posedge clk) if(!rstn) r_cnt <= r_cnt + 1'b1;
+    always @(posedge sensor_clk) if(!srstn) s_cnt <= s_cnt + 1'b1;
+
+    wire [7:0] s_pixel;      // From Producer
+    wire       s_valid;      
+    wire [7:0] f_pixel;      // From FIFO
+    wire       f_empty, f_full;
+    wire [7:0] p_out;        // From Processor
+    wire       p_valid;      
+    wire       p_ready;      // Ready from Processor to FIFO
+    wire       status;       // Processor busy status
     
-    // Output Side Wires
-    wire [7:0] out_pixel;
-    wire       out_valid;
-    reg        out_ready;
+    reg [1:0]  mode = 2'b00;
+    reg [71:0] kernel = {8'd1, 8'd1, 8'd1, 8'd1, 8'd1, 8'd1, 8'd1, 8'd1, 8'd1}; // All 1s
 
+    initial begin
+        integer f, i;
+        f = $fopen("image.hex", "w");
+        for (i=0; i<1024; i=i+1) begin
+            $fwrite(f, "%02x\n", i % 256);
+        end
+        $fclose(f);
 
-	/* Write your tb logic for your combined design here */
-initial begin
-        tb_mode = 2'b00;   
-        tb_kernel = 0;
-        out_ready = 0;    
+        $dumpfile("dump.vcd");
+        $dumpvars(0, tb_data_prod_proc);
 
-        wait(resetn && sensor_resetn);
-        #100;
+        $display("--- Starting Simulation: Mode Bypass (00) ---");
+        #10000; 
         
-        out_ready = 1;
+        $display("--- Switching to Mode: Invert (01) ---");
+        mode = 2'b01;
+        #10000;
 
-        tb_mode = 2'b00;
-        #5000;
+        $display("--- Switching to Mode: Convolution (10) ---");
+        mode = 2'b10;
+        #100000; // Give it time to fill line buffers (2048+ cycles)
 
-        tb_mode = 2'b01;
-        #5000;
-
-        tb_kernel = {8'd1, 8'd1, 8'd1, 8'd1, 8'd1, 8'd1, 8'd1, 8'd1, 8'd1};
-        tb_mode = 2'b10;
-        
-        // Note: Convolution needs >2051 pixels to start showing valid_out
-        #50000; 
-
-        $display("Simulation Finished");
+        $display("--- Simulation Finished ---");
         $finish;
     end
 
-    /* Data Processor (UUT) */
-    data_proc data_processing (
-        .clk(clk),
-        .rstn(resetn),
-        .pixel_in(pixel_bus),  // From Producer
-        .valid_in(valid_bus),  // From Producer
-        .ready_out(ready_bus), // To Producer
-        .mode(tb_mode),
-        .kernel(tb_kernel),
-        .pixel_out(out_pixel),
-        .valid_out(out_valid),
-        .ready_in(out_ready)   // Driven by TB
+    // Data Producer: Streams data at 200MHz
+    data_producer #(.IMAGE_SIZE(1024)) producer (
+        .sensor_clk(sensor_clk),
+        .rst_n(srstn),
+        .ready(!f_full),     
+        .pixel(s_pixel),
+        .valid(s_valid)
     );
 
-    /* Data Producer */
-    data_prod data_producer (
-        .sensor_clk(sensor_clk),
-        .rstn(sensor_resetn),
-        .ready(ready_bus),     // From Processor
-        .pixel(pixel_bus),     // To Processor
-        .valid(valid_bus)      // To Processor
+    // Async FIFO: The Bridge
+    async_fifo #(.WIDTH(8), .DEPTH(16)) fifo (
+        .wclk(sensor_clk),
+        .wrst_n(srstn),
+        .wr_en(s_valid),
+        .wdata(s_pixel),
+        .rclk(clk),
+        .rrst_n(rstn),
+        .rd_en(p_ready && !f_empty), // Only read if processor is ready and data exists
+        .rdata(f_pixel),
+        .full(f_full),
+        .empty(f_empty)
     );
+
+    // Data Processor: Processes at 100MHz
+    data_proc processor (
+        .clk(clk),
+        .rstn(rstn),
+        .pixel_in(f_pixel),
+        .valid_in(!f_empty),
+        .ready_out(p_ready),
+        .mode(mode),
+        .kernel(kernel),
+        .pixel_out(p_out),
+        .valid_out(p_valid),
+        .ready_in(1'b1),     // Consumer is always ready
+        .status(status)
+    );
+
+// monitor for debugging   
+//    always @(posedge clk) begin
+//        if (p_valid) begin
+//            $display("Time: %0t | Mode: %b | Out: %h | Status: %b", $time, mode, p_out, status);
+//        end
+//   end
 
 endmodule
