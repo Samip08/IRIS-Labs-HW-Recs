@@ -18,6 +18,8 @@ Notice
 
 * Quartus Standards: For hardware synthesis, use the files located in the quartus_execution_modules folder. These have been modularized for professional EDA toolchains.
 
+* The Proposed Architectural model has been uploaded in the same repository outside the data_prod_proc block 
+
 Important: Testbench Configuration
 ----------------------------------
 * The provided testbench includes an explicit image.hex generation block.
