@@ -1,44 +1,39 @@
-# Data Processing Block: Design Specification
+System Architecture
+The design is split into three primary stages to maximize efficiency and timing closure:
 
-## 1. Interface Definition
-This module implements a streaming `valid/ready` handshake to process sensor data.
+Data Producer (Sensor Domain - 200MHz): Simulates high-speed pixel streaming from a CMOS sensor.
 
-### Signals
-- **Inputs:**
-  - `pixel_in [7:0]`: Raw 8-bit data from the Producer.
-  - `valid_in`: Logic high when `pixel_in` is stable and valid.
-  - `ready_in`: Logic high when the Consumer is ready to receive data.
-  - `kernel [71:0]`: 72-bit register holding nine 8-bit convolution coefficients.
-- **Outputs:**
-  - `pixel_out [7:0]`: The processed 8-bit result.
-  - `ready_out`: Logic high when this block can accept a new input pixel.
-  - `valid_out`: Logic high when `pixel_out` is processed and stable.
+Async FIFO (The Bridge): A LIFO-inspired asynchronous buffer using Gray Code pointers for safe, low-latency Clock Domain Crossing (CDC).
 
----
+Data Processor (Processing Domain - 100MHz): A sliding-window convolution engine using line buffers for real-time stream processing.
 
-## 2. Implementation Logic (The 3 Steps)
+Execution & Compatibility
+Notice
+Primary Verification: The system was initially verified in Icarus Verilog. If you encounter discrepancies in simulation, please refer to the integrated source files used in the Icarus environment.
 
-### Step 1: Reset & State Control
-- **Reset State:** When `rstn` is pulled low, all internal valid signals must be cleared (`0`), and `ready_out` should be set to `1` to indicate the system is ready for the first pixel.
-- **State Transition:** Data only moves when a handshake occurs (`valid && ready` == 1).
+Quartus Standards: For hardware synthesis, use the files located in the quartus_execution_modules folder. These have been modularized for professional EDA toolchains.
 
-### Step 2: Combinatorial Operation (The Math)
-The module calculates the output based on the `mode` input. This logic prepares the result as soon as data arrives, regardless of the output's readiness.
-- **Bypass (00):** `pixel_out = pixel_in`.
-- **Invert (01):** `pixel_out = ~pixel_in`.
-- **Convolution (10):** `pixel_out = Sum(Window_Pixels[0:8] * Kernel_Coefficients[0:8])`.
+Important: Testbench Configuration
+The provided testbench includes an explicit image.hex generation block.
 
+Warning: If you are using a custom image.hex for validation, you must comment out the generation block in the testbench, or your custom file will be overwritten at runtime.
 
+Benefits of this design
+1. Gray-Coded Async FIFO 
+Our model utilizes Gray Code pointers to guarantee that values are transported safely with minimum latency.
 
-### Step 3: Handshake Synchronizer (The Gatekeeper)
-This block manages the flow control and backpressure.
-- **Backpressure Check:** The module must check `ready_in`. If `ready_in` is low, the module **must stall**, holding the current `pixel_out` and keeping `valid_out` high.
-- **Input Flow:** `ready_out` should only be asserted if the current output has been successfully taken by the consumer or if the pipeline is empty.
+One-Bit Toggling: By ensuring only one bit changes per transition, we eliminate the need for traditional synchronization delays. The system inherently knows if a value is a continuation of the past or a fresh update.
 
+Handshake Mechanism: Optimizing clock cycles in this uesecase(200MHz/100MHz) provides a robust handshake that ensures the latest value updated with the toggled Gray bit is picked up immediately by the slower processing clock.
 
+2. Stream Processing & Line Buffering
+Instead of wasting massive amounts of on-chip memory (BRAM) to store an entire image, this processor uses a sliding window technique.
 
----
+Line Buffers: The processor stores only two rows of pixels at a time.
 
-## 3. Register Map (Memory Mapped)
-These addresses are used by the RISC-V SoC to control the block:
-- `0x00`: Mode Register (R/W)
+Sliding Window: Once three vertical pixels are available, the 3x3 window "slides" across the stream, multiplying by the kernel and summing the results instantly.
+
+3. Maximum Throughput (Zero Pixel Loss)
+Clock Independence: Your sensor runs at its max native speed (200MHz) while your processor runs at a stable 100MHz.
+The processor stalls until it recieves all the pits to prevent any garbage output , further incase a complex filter slows down the processor, the producer is made to pause to ensure safety of data.
+

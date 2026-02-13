@@ -1,8 +1,5 @@
 `timescale 1ns/1ps
 
-// ==========================================================================
-// MODULE 1: DATA PROCESSOR
-// ==========================================================================
 module data_proc (
     input clk, rstn,
     input [7:0] pixel_in,
@@ -20,7 +17,6 @@ module data_proc (
     reg [9:0] ptr;
     reg [7:0] p11,p12,p13,p21,p22,p23,p31,p32,p33;
 
-    // Status logic
     assign status = (mode == 2'b10 && pixel_count < 2051) || !ready_in;
 
     wire [19:0] conv_sum = (p11*kernel[7:0]   + p12*kernel[15:8]  + p13*kernel[23:16] +
@@ -54,9 +50,7 @@ module data_proc (
     end
 endmodule
 
-// ==========================================================================
-// MODULE 2: ASYNC FIFO
-// ==========================================================================
+
 module async_fifo #(parameter WIDTH = 8, DEPTH = 16) (
     input wclk, wrst_n, wr_en,
     input [WIDTH-1:0] wdata,
@@ -95,9 +89,7 @@ module async_fifo #(parameter WIDTH = 8, DEPTH = 16) (
     always @(*) empty = (rptr_gray == rq2_wptr);
 endmodule
 
-// ==========================================================================
-// MODULE 3: DATA PRODUCER
-// ==========================================================================
+
 module data_producer #(parameter IMAGE_SIZE = 1024) (
     input sensor_clk, rst_n, ready,
     output reg [7:0] pixel,
