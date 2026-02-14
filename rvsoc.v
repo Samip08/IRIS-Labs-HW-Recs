@@ -1,6 +1,7 @@
 module rvsoc (
 	input clk,
 	input resetn,
+	input sensor_clk,
 
 	output        iomem_valid,
 	input         iomem_ready,
@@ -89,13 +90,17 @@ module rvsoc (
 	wire [31:0] simpleuart_reg_dat_do;
 	wire        simpleuart_reg_dat_wait;
 
+	wire [31:0] dataproc_rdata;
+	wire dataproc_sel = mem_valid && (mem_addr == 32'h 0x0200_000c);
+
 	assign mem_ready =
     (iomem_valid && iomem_ready) ||
     spimem_ready ||
     ram_ready ||
     spimemio_cfgreg_sel ||
     simpleuart_reg_div_sel ||
-    (simpleuart_reg_dat_sel && !simpleuart_reg_dat_wait);
+    (simpleuart_reg_dat_sel && !simpleuart_reg_dat_wait)||
+	dataproc_sel;
 
 	assign mem_rdata =
     (iomem_valid && iomem_ready) ? iomem_rdata :
@@ -104,6 +109,7 @@ module rvsoc (
     spimemio_cfgreg_sel         ? spimemio_cfgreg_do :
     simpleuart_reg_div_sel      ? simpleuart_reg_div_do :
     simpleuart_reg_dat_sel      ? simpleuart_reg_dat_do :
+	dataproc_sel            ? dataproc_rdata        :
     32'h0;
 
 	picorv32 #(
@@ -182,6 +188,17 @@ module rvsoc (
 
 	// Instantiate your data-processing-producing combined module here
 
+	image_engine_soc_top my_engine (
+    .clk(clk),
+    .rstn(resetn),
+    .sensor_clk(sensor_clk), 
+    .mem_addr(mem_addr),
+    .mem_wdata(mem_wdata),
+    .mem_wstrb(dataproc_sel ? mem_wstrb : 4'b0000),
+    .mem_sel(dataproc_sel),
+    .mem_rdata(dataproc_rdata)
+);
+
 
 	//----------------------------------------------------------------
 
@@ -219,3 +236,73 @@ module soc_mem #(
 	end
 endmodule
 
+module image_engine_soc_top (
+    input clk,          
+    input rstn,         
+    input sensor_clk,   
+    
+    input [31:0] mem_addr,
+    input [31:0] mem_wdata,
+    input [3:0]  mem_wstrb,
+    input        mem_sel,   
+    output [31:0] mem_rdata
+);
+
+    reg [1:0]  reg_mode;
+    reg [71:0] reg_kernel;
+	reg reg_ready_in;
+    
+    always @(posedge clk) begin
+
+        if (!rstn) begin
+            reg_mode <= 2'b00;
+			reg_ready_in <= 1'b1;
+            reg_kernel <= 72'h010101010101010101; 
+        end else if (mem_sel && |mem_wstrb) begin
+            if (mem_addr[3:0] == 4'h0) begin
+				reg_mode     <= mem_wdata[1:0];
+                reg_ready_in <= mem_wdata[2];
+			end
+        end
+    end
+
+    wire [7:0] prod_pixel, fifo_pixel, proc_pixel;
+    wire prod_valid, fifo_empty, fifo_full, proc_valid, proc_status;
+    
+    // Module 3: Producer
+    data_producer #(.IMAGE_SIZE(1024)) producer_inst (
+        .sensor_clk(sensor_clk),
+        .rst_n(rstn),
+        .ready(!fifo_full),
+        .pixel(prod_pixel),
+        .valid(prod_valid)
+    );
+
+    // Module 2: FIFO (CDC Bridge)
+    async_fifo fifo_inst (
+        .wclk(sensor_clk), .wrst_n(rstn), .wr_en(prod_valid), .wdata(prod_pixel),
+        .rclk(clk),        .rrst_n(rstn), .rd_en(!fifo_empty), .rdata(fifo_pixel),
+        .full(fifo_full),  .empty(fifo_empty)
+    );
+
+    // Module 1: Processor
+    data_proc processor_inst (
+        .clk(clk), .rstn(rstn),
+        .pixel_in(fifo_pixel),
+        .valid_in(!fifo_empty),
+        .ready_in(reg_ready_in),
+        .mode(reg_mode),
+        .kernel(reg_kernel),
+        .pixel_out(proc_pixel),
+        .valid_out(proc_valid),
+        .status(proc_status)
+    );
+
+    // 3. Bus Read Logic (Hardware -> CPU)
+    // CPU reads from 0x0200_000c
+    // bit [7:0]   : Processed Pixel
+    // bit [8]     : Valid Flag
+    // bit [9]     : Status (Warm-up flag)
+    assign mem_rdata = {22'b0, proc_status, proc_valid, proc_pixel};
+
+endmodule
