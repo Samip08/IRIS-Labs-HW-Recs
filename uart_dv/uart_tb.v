@@ -38,18 +38,18 @@ module uart_tb;
 	rvsoc_wrapper #(
 		.MEM_WORDS(256)
 	) uut (
-		.clk      (clk),
-		.resetn   (resetn),
-		.ser_rx   (ser_rx),
-		.ser_tx   (ser_tx),
-		.flash_csb(flash_csb),
-		.flash_clk(flash_clk),
-		.flash_io0(flash_io0),
-		.flash_io1(flash_io1),
-		.flash_io2(flash_io2),
-		.flash_io3(flash_io3)
+		.clk          (clk),
+		.resetn       (resetn),
+		.sensor_clk   (clk),    
+		.ser_rx       (ser_rx),
+		.ser_tx       (ser_tx),
+		.flash_csb    (flash_csb),
+		.flash_clk    (flash_clk),
+		.flash_io0    (flash_io0),
+		.flash_io1    (flash_io1),
+		.flash_io2    (flash_io2),
+		.flash_io3    (flash_io3)
 	);
-
 	spiflash spiflash (
 		.csb(flash_csb),
 		.clk(flash_clk),
