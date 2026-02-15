@@ -186,8 +186,6 @@ module rvsoc (
 		.reg_dat_wait(simpleuart_reg_dat_wait)
 	);
 
-	// Instantiate your data-processing-producing combined module here
-
 	image_engine_soc_top my_engine (
     .clk(clk),
     .rstn(resetn),
@@ -198,7 +196,6 @@ module rvsoc (
     .mem_sel(dataproc_sel),
     .mem_rdata(dataproc_rdata)
 );
-
 
 	//----------------------------------------------------------------
 
@@ -266,7 +263,10 @@ module image_engine_soc_top (
     end
 
     wire [7:0] prod_pixel, fifo_pixel, proc_pixel;
-    wire prod_valid, fifo_empty, fifo_full, proc_valid, proc_status;
+    wire prod_valid, fifo_empty, fifo_full, proc_valid, proc_status, proc_ready_out;
+    
+    // Simple: read when FIFO has data
+    wire fifo_read = !fifo_empty;
     
     // Module 3: Producer
     data_producer #(.IMAGE_SIZE(1024)) producer_inst (
@@ -277,22 +277,23 @@ module image_engine_soc_top (
         .valid(prod_valid)
     );
 
-    // Module 2: FIFO (CDC Bridge)
+    // Module 2: FIFO
     async_fifo fifo_inst (
-        .wclk(sensor_clk), .wrst_n(rstn), .wr_en(prod_valid), .wdata(prod_pixel),
-        .rclk(clk),        .rrst_n(rstn), .rd_en(!fifo_empty), .rdata(fifo_pixel),
+        .wclk(sensor_clk), .wrst_n(rstn), .wr_en(prod_valid && !fifo_full), .wdata(prod_pixel),
+        .rclk(clk),        .rrst_n(rstn), .rd_en(fifo_read), .rdata(fifo_pixel),
         .full(fifo_full),  .empty(fifo_empty)
     );
 
-    // Module 1: Processor
+    // Module 1: Processor - always ready to process
     data_proc processor_inst (
         .clk(clk), .rstn(rstn),
         .pixel_in(fifo_pixel),
-        .valid_in(!fifo_empty),
-        .ready_in(1'b1),
+        .valid_in(fifo_read),
+        .ready_in(1'b1),  
         .mode(reg_mode),
         .kernel(reg_kernel),
         .pixel_out(proc_pixel),
+        .ready_out(proc_ready_out),
         .valid_out(proc_valid),
         .status(proc_status)
     );

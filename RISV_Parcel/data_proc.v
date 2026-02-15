@@ -23,6 +23,8 @@ module data_proc (
                             p21*kernel[31:24] + p22*kernel[39:32] + p23*kernel[47:40] +
                             p31*kernel[55:48] + p32*kernel[63:56] + p33*kernel[71:64]);
 
+    localparam WARMUP_LIMIT = 2051;
+
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
             {valid_out, pixel_out, ptr, pixel_count} <= 0;
@@ -39,13 +41,17 @@ module data_proc (
 
             case(mode)
                 2'b00: pixel_out <= pixel_in;
-                2'b01: pixel_out <= ~pixel_in;
-                2'b10: pixel_out <= conv_sum / 9;
+                2'b01: pixel_out <= 8'hFF - pixel_in;          
+                2'b10: pixel_out <= (conv_sum / 9);
                 default: pixel_out <= pixel_in;
             endcase
-            valid_out <= (mode == 2'b10) ? (pixel_count >= 2051) : 1'b1;
-        end else if (ready_in && valid_out) begin
-            valid_out <= 1'b0;
+
+            if (mode == 2'b10)
+                valid_out <= (pixel_count >= WARMUP_LIMIT);
+            else
+                valid_out <= 1'b1;
+        end else begin
+            valid_out <= 1'b0; 
         end
     end
 endmodule
@@ -74,13 +80,24 @@ module async_fifo #(parameter WIDTH = 8, DEPTH = 16) (
     end
 
     always @(posedge rclk or negedge rrst_n) begin
-        if (!rrst_n) begin rptr <= 0; rptr_gray <= 0; end
-        else if (rd_en && !empty) begin
-            rptr <= rptr + 1;
-            rptr_gray <= (rptr + 1) ^ ((rptr + 1) >> 1);
+        if (!rrst_n) begin 
+            rptr <= 0; 
+            rptr_gray <= 0;
+        end
+        else begin
+            if (rd_en && !empty) begin
+                rptr <= rptr + 1;
+                rptr_gray <= (rptr + 1) ^ ((rptr + 1) >> 1);
+            end
         end
     end
-    assign rdata = mem[rptr[3:0]];
+    
+    reg [3:0] rptr_delayed;
+    always @(posedge rclk) begin
+        rptr_delayed <= rptr;
+    end
+    
+    assign rdata = mem[rptr_delayed[3:0]];
 
     always @(posedge wclk) {wq2_rptr, wq1_rptr} <= {wq1_rptr, rptr_gray};
     always @(posedge rclk) {rq2_wptr, rq1_wptr} <= {rq1_wptr, wptr_gray};

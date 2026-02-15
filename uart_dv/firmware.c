@@ -22,7 +22,7 @@ void put_hex(uint8_t val) {
 int main() {
     put_str("Image Processing\n");
 
-    IMG_ENGINE_REG = 0x05; 
+    IMG_ENGINE_REG = 0x04;
     put_str("INVERT\n");
 
     while (1) {
