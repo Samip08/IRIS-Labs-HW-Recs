@@ -198,7 +198,7 @@ module rvsoc (
 );
 
 	//----------------------------------------------------------------
-
+    
 	always @(posedge clk)
 		ram_ready <= mem_valid && !mem_ready && mem_addr < 4*MEM_WORDS;
 
@@ -247,26 +247,37 @@ module image_engine_soc_top (
 
     reg [1:0]  reg_mode;
     reg [71:0] reg_kernel;
-	reg reg_ready_in;
+    reg [1:0]  mode_q;     // To detect the mode switch
+    reg [1:0]  flush_cnt;  // The 3-cycle timer
     
     always @(posedge clk) begin
         if (!rstn) begin
-            reg_mode <= 2'b00;        
-            reg_ready_in <= 1'b1;
+            reg_mode <= 2'b00;
+            mode_q   <= 2'b00;
+            flush_cnt <= 0;
             reg_kernel <= 72'h010101010101010101; 
-        end else if (mem_sel && |mem_wstrb) begin
-            if (mem_addr[3:0] == 4'h0) begin
-                reg_mode     <= mem_wdata[1:0]; 
-                reg_ready_in <= mem_wdata[2];
-            end
+        end else begin
+        mode_q <= reg_mode; // Always follow reg_mode
+
+        if (mem_sel && |mem_wstrb && mem_addr[3:0] == 4'h0) begin
+            reg_mode <= mem_wdata[1:0];
+        end
+
+        if (reg_mode != mode_q) begin
+            flush_cnt <= 3;
+        end else if (flush_cnt > 0) begin
+            flush_cnt <= flush_cnt - 1;
         end
     end
+end
 
     wire [7:0] prod_pixel, fifo_pixel, proc_pixel;
     wire prod_valid, fifo_empty, fifo_full, proc_valid, proc_status, proc_ready_out;
     
     // Simple: read when FIFO has data
     wire fifo_read = !fifo_empty;
+	wire gate_valid = (flush_cnt > 0) ? 1'b0 : fifo_read;
+    wire [7:0] gate_pixel = (flush_cnt > 0) ? 8'h00 : fifo_pixel;
     
     // Module 3: Producer
     data_producer #(.IMAGE_SIZE(1024)) producer_inst (
@@ -287,8 +298,8 @@ module image_engine_soc_top (
     // Module 1: Processor - always ready to process
     data_proc processor_inst (
         .clk(clk), .rstn(rstn),
-        .pixel_in(fifo_pixel),
-        .valid_in(fifo_read),
+        .pixel_in(gate_pixel),  
+        .valid_in(gate_valid),  
         .ready_in(1'b1),  
         .mode(reg_mode),
         .kernel(reg_kernel),
@@ -303,5 +314,6 @@ module image_engine_soc_top (
     // bit [7:0]   : Processed Pixel
     // bit [8]     : Valid Flag
     // bit [9]     : Status (Warm-up flag)
-	assign mem_rdata = {22'b0, proc_status, proc_valid, proc_pixel};
+	wire [31:0] safe_pixel_data = (flush_cnt > 0) ? 32'h0 : {22'b0, proc_status, proc_valid, proc_pixel};
+	assign mem_rdata = safe_pixel_data;
 endmodule

@@ -41,7 +41,7 @@ module data_proc (
 
             case(mode)
                 2'b00: pixel_out <= pixel_in;
-                2'b01: pixel_out <= 8'hFF - pixel_in;          
+                2'b01: pixel_out <= 8'd255 - pixel_in;          
                 2'b10: pixel_out <= (conv_sum / 9);
                 default: pixel_out <= pixel_in;
             endcase
