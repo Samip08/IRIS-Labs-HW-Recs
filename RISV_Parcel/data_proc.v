@@ -13,49 +13,72 @@ module data_proc (
     output status 
 );
     reg [20:0] pixel_count;
+    reg [1:0] mode_q; 
     reg [7:0] lb1 [0:1023], lb2 [0:1023];
     reg [9:0] ptr;
     reg [7:0] p11,p12,p13,p21,p22,p23,p31,p32,p33;
 
-    assign status = (mode == 2'b10 && pixel_count < 2051) || !ready_in;
+    localparam WARMUP_LIMIT = 2051;
+
+    // Status high during convolution warmup or if downstream isn't ready
+    assign status = (mode == 2'b10 && pixel_count < WARMUP_LIMIT) || !ready_in;
 
     wire [19:0] conv_sum = (p11*kernel[7:0]   + p12*kernel[15:8]  + p13*kernel[23:16] +
                             p21*kernel[31:24] + p22*kernel[39:32] + p23*kernel[47:40] +
                             p31*kernel[55:48] + p32*kernel[63:56] + p33*kernel[71:64]);
 
-    localparam WARMUP_LIMIT = 2051;
-
     always @(posedge clk or negedge rstn) begin
         if (!rstn) begin
-            {valid_out, pixel_out, ptr, pixel_count} <= 0;
+            {valid_out, pixel_out, ptr, pixel_count, mode_q} <= 0;
             ready_out <= 1'b1;
             {p11,p12,p13,p21,p22,p23,p31,p32,p33} <= 0;
-        end else if (valid_in && ready_out) begin
-            p11<=p12; p12<=p13; p13<=lb2[ptr];
-            p21<=p22; p22<=p23; p23<=lb1[ptr];
-            p31<=p32; p32<=p33; p33<=pixel_in;
-            
-            lb1[ptr] <= pixel_in; lb2[ptr] <= lb1[ptr];
-            ptr <= (ptr == 1023) ? 0 : ptr + 1;
-            pixel_count <= pixel_count + 1;
-
-            case(mode)
-                2'b00: pixel_out <= pixel_in;
-                2'b01: pixel_out <= 8'd255 - pixel_in;          
-                2'b10: pixel_out <= (conv_sum / 9);
-                default: pixel_out <= pixel_in;
-            endcase
-
-            if (mode == 2'b10)
-                valid_out <= (pixel_count >= WARMUP_LIMIT);
-            else
-                valid_out <= 1'b1;
         end else begin
-            valid_out <= 1'b0; 
+            mode_q <= mode;
+            
+            // RESET counter on mode switch to prevent stale data bleed
+            if (mode != mode_q) begin
+                pixel_count <= 0;
+                valid_out   <= 1'b0;
+                pixel_out   <= 8'h00;
+            end else if (valid_in && ready_out) begin
+                // Shift window and update line buffers
+                p11<=p12; p12<=p13; p13<=lb2[ptr];
+                p21<=p22; p22<=p23; p23<=lb1[ptr];
+                p31<=p32; p32<=p33; p33<=pixel_in;
+                
+                lb1[ptr] <= pixel_in; lb2[ptr] <= lb1[ptr];
+                ptr <= (ptr == 1023) ? 0 : ptr + 1;
+                pixel_count <= pixel_count + 1;
+
+                case(mode)
+                    2'b00: begin // Bypass
+                        pixel_out <= pixel_in;
+                        valid_out <= 1'b1;
+                    end
+                    2'b01: begin // Invert
+                        pixel_out <= 8'd255 - pixel_in;           
+                        valid_out <= 1'b1;
+                    end
+                    2'b10: begin // Convolution
+                        if (pixel_count < WARMUP_LIMIT) begin
+                            pixel_out <= 8'h00;
+                            valid_out <= 1'b0;
+                        end else begin
+                            pixel_out <= (conv_sum / 9);
+                            valid_out <= 1'b1;
+                        end
+                    end
+                    default: begin
+                        pixel_out <= pixel_in;
+                        valid_out <= 1'b1;
+                    end
+                endcase
+            end else begin
+                valid_out <= 1'b0; 
+            end
         end
     end
 endmodule
-
 
 module async_fifo #(parameter WIDTH = 8, DEPTH = 16) (
     input wclk, wrst_n, wr_en,
@@ -65,10 +88,7 @@ module async_fifo #(parameter WIDTH = 8, DEPTH = 16) (
     output reg full, empty
 );
     reg [WIDTH-1:0] mem [0:DEPTH-1];
-    reg [3:0] wptr, rptr;
-    reg [3:0] wptr_gray, rptr_gray;
-    reg [3:0] wq2_rptr, rq2_wptr; 
-    reg [3:0] wq1_rptr, rq1_wptr;
+    reg [3:0] wptr, rptr, wptr_gray, rptr_gray, wq2_rptr, rq2_wptr, wq1_rptr, rq1_wptr;
 
     always @(posedge wclk or negedge wrst_n) begin
         if (!wrst_n) begin wptr <= 0; wptr_gray <= 0; end
@@ -80,32 +100,22 @@ module async_fifo #(parameter WIDTH = 8, DEPTH = 16) (
     end
 
     always @(posedge rclk or negedge rrst_n) begin
-        if (!rrst_n) begin 
-            rptr <= 0; 
-            rptr_gray <= 0;
-        end
-        else begin
-            if (rd_en && !empty) begin
-                rptr <= rptr + 1;
-                rptr_gray <= (rptr + 1) ^ ((rptr + 1) >> 1);
-            end
+        if (!rrst_n) begin rptr <= 0; rptr_gray <= 0; end
+        else if (rd_en && !empty) begin
+            rptr <= rptr + 1;
+            rptr_gray <= (rptr + 1) ^ ((rptr + 1) >> 1);
         end
     end
     
     reg [3:0] rptr_delayed;
-    always @(posedge rclk) begin
-        rptr_delayed <= rptr;
-    end
-    
+    always @(posedge rclk) rptr_delayed <= rptr;
     assign rdata = mem[rptr_delayed[3:0]];
 
     always @(posedge wclk) {wq2_rptr, wq1_rptr} <= {wq1_rptr, rptr_gray};
     always @(posedge rclk) {rq2_wptr, rq1_wptr} <= {rq1_wptr, wptr_gray};
-
     always @(*) full = (wptr_gray == {~wq2_rptr[3:2], wq2_rptr[1:0]});
     always @(*) empty = (rptr_gray == rq2_wptr);
 endmodule
-
 
 module data_producer #(parameter IMAGE_SIZE = 1024) (
     input sensor_clk, rst_n, ready,
@@ -116,15 +126,12 @@ module data_producer #(parameter IMAGE_SIZE = 1024) (
     reg [$clog2(IMAGE_SIZE):0] pixel_index;
 
     initial begin 
-    $readmemh("image.hex", image_mem);
-    $display("TB CHECK: First hex value is %h", image_mem[0]); 
+        $readmemh("image.hex", image_mem);
     end
 
     always @(posedge sensor_clk or negedge rst_n) begin
         if (!rst_n) begin
-            pixel_index <= 0;
-            valid <= 0;
-            pixel <= 8'h00;
+            pixel_index <= 0; valid <= 0; pixel <= 8'h00;
         end else if (ready) begin
             pixel <= image_mem[pixel_index];
             valid <= 1'b1;
